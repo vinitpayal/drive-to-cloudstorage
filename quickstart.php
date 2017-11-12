@@ -8,6 +8,12 @@ require_once __DIR__ . '/vendor/autoload.php';
 use Google\Cloud\Storage\StorageClient;
 
 
+$existed = in_array("gs", stream_get_wrappers());
+if ($existed) {
+    stream_wrapper_unregister("gs");
+}
+stream_wrapper_register("gs", "Google\Cloud\Storage\StreamWrapper");
+
 
 
 define('APPLICATION_NAME', 'Drive API PHP Quickstart');
@@ -111,6 +117,9 @@ function downloadSingleFIle($fileId,$fileName, $client){
 
     $content = $results->getBody()->getContents();
 
+     echo "======= Got api result for =====".$fileName."===========".PHP_EOL;
+
+
     fwrite($fileObj, $content);
 
     fclose($fileObj);
@@ -154,7 +163,7 @@ function getListofFiles(){
     $optParams = array(
       'pageSize' => 1,
       'q' => "'1JPLIJwIkn7_fsAd9j99cbfmedqMxXw8u' in parents",
-      // 'fields' => 'nextPageToken,files(id, name,mimeType)',
+      'fields' => 'nextPageToken,files(id, name,mimeType,size)',
       'supportsTeamDrives' => true,
       includeTeamDriveItems => true,
       corpora => 'teamDrive',
@@ -168,8 +177,11 @@ function getListofFiles(){
     } else {
       print "Files:\n";
       foreach ($results->getFiles() as $file) {
+        echo "File Name :".$file->name." File Size ".(int)$file->size." DownloadUrl".$file->downloadUrl.PHP_EOL;
 
-        // echo json_encode($file);
+        
+        downloadInChunksAndStorInFile($file);
+        // echo json_encode($file); 
         // echo $file->name.' => '.$file->id.'\n';
 
         // $fileObj = $service->files->get($file->id,array("supportsTeamDrives" => true))->getDownloadUrl();
@@ -181,11 +193,11 @@ function getListofFiles(){
 
         // downloadFile($service, $fileObj);
         $fileNameInCloudStorage = "";
-        $donwloadedFilePath = downloadSingleFIle($file->id, $file->name, $client);
+        // $donwloadedFilePath = downloadSingleFIle($file->id, $file->name, $client);
 
-        upload_object($file->name,$donwloadedFilePath, $client);
+        // upload_object($file->name,$donwloadedFilePath, $client);
 
-        echo $file->name." Backed Up To Storage".PHP_EOL;
+        // echo $file->name." Backed Up To Storage".PHP_EOL;
 
           // echo json_encode($file).'\n';
         // echo $file->name." -> ".$file->mimeType.' -> \n';
@@ -194,55 +206,77 @@ function getListofFiles(){
     }
 }
 
-function getTeamDrives(){
-    $client = getClient();
-    $service = new Google_Service_Drive($client);
+function downloadInChunksAndStorInFile($fileObj){
+        echo "Starting downloading for ".$fileName.PHP_EOL;
 
-      $optParams = array(
-        // 'pageSize' => 10,
-        // 'fields' => 'nextPageToken, files(id, name)',
-        // 'supportsTeamDrives' => true,
-        // includeTeamDriveItems => true,
-        // corpora => 'teamDrive',
-        // teamDriveId => 'Backup'
-      );
-    // echo json_encode($service);die();
+        $fileId = $fileObj->id;
+        $fileName = $fileObj->name;
+        $fileSize = $fileObj->size;
+        
+        $client = getClient();
 
-    $results = $service->teamdrives->list;
+        // Get the authorized Guzzle HTTP client
+        $http = $client->authorize();
 
-    echo json_encode($results);
+        $fileCompletePath = TEMP_STORAGE_PATH.'/'.$fileName;
 
+        $fp = fopen($fileCompletePath, 'w');
+
+        echo "Cloud Storage file path gs://".BUCKET_NAME.'/Vault/'.$fileName.PHP_EOL;
+
+      
+        
+        // $context = stream_context_create();
+
+        // $cloudStorageFilerHandler = fopen("gs://".BUCKET_NAME.'/Vault/'.$fileName, 'w');
+
+
+        // Download in 10 MB chunks
+        $chunkSizeBytes = 10 * 1024 * 1024;
+        $chunkStart = 0;
+
+
+        // Iterate over each chunk and write it to our file
+        while ($chunkStart < $fileSize) {
+
+            $chunkEnd = $chunkStart + $chunkSizeBytes;
+
+            echo "For file ".$fileName." Downloading from ".$chunkStart." to ".$chunkEnd.PHP_EOL;
+
+
+            $response = $http->request(
+            'GET',
+            sprintf('/drive/v3/files/%s', $fileId),
+            [
+            'query' => ['alt' => 'media'],
+            'headers' => [
+            'Range' => sprintf('bytes=%s-%s', $chunkStart, $chunkEnd)
+            ]
+            ]
+            );
+            $chunkStart = $chunkEnd + 1;
+            fwrite($fp, $response->getBody()->getContents());
+      }
+      // close the file pointer
+      fclose($fp);
+
+      upload_object($fileName,$fileCompletePath, $client);      
+
+      // uploadChunkToCloudStorage($cloudStorageFilerHandler,$response->getBody()->getContents());
+
+      // fclose($cloudStorageFilerHandler);
 }
-
-
-function teamDrivesByApi(){
- $curl = curl_init();
-
-curl_setopt_array($curl, array(
-  CURLOPT_URL => "https://www.googleapis.com/drive/v3/teamdrives?key=AIzaSyD-a9IF8KKYgoC3cpgS-Al7hLQDbugrDcw",
-  CURLOPT_RETURNTRANSFER => true,
-  CURLOPT_ENCODING => "",
-  CURLOPT_MAXREDIRS => 10,
-  CURLOPT_TIMEOUT => 30,
-  CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-  CURLOPT_CUSTOMREQUEST => "GET",
-  CURLOPT_HTTPHEADER => array(
-    "authorization: Bearer ya29.GmAABXzJHypWlnZGHVWUwFjhfJgKukNPAQCKSIJTO0XlHuUao8qciD6-1Gs5ZeduRAYz7zWzhJ9I7LMdmdYYkn-2yFhvL8BH_S2EKFbM73uSA2S8Kh7Gjzu-wm73PXaAWnA",
-    "cache-control: no-cache",
-    "postman-token: 0a9d2a7e-0c13-174b-6ca0-a499e20082cd"
-  ),
-));
-
-$response = curl_exec($curl);
-$err = curl_error($curl);
-
-curl_close($curl);
-
-echo json_encode($response);
-}
-
 
 getListofFiles();
+
+
+function uploadChunkToCloudStorage($fp, $content){
+
+  // move_uploaded_file('/tmp/backup/test.txt', "gs://gsuite-backup/Vault/test.txt");
+  fwrite($fp, $content);
+
+  // echo "Uploaded :".$filePath.PHP_EOL;
+}
 
 
 function upload_object($objectName, $source, $client, $bucketName = BUCKET_NAME){
@@ -253,5 +287,10 @@ function upload_object($objectName, $source, $client, $bucketName = BUCKET_NAME)
     $bucketName,
     $obj,
     ['name' => "Vault/".$objectName, 'data' => file_get_contents($source), 'uploadType' => 'media']
+
 );  
+
+  echo $objectName." was uploaded to storage ".PHP_EOL;
+  //Delete local temp copy after backing it up
+  // unlink($soßurce);
 }
